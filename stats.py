@@ -64,17 +64,18 @@ def list_decks(profile_dir='~/Anki/User 1'):
     return build_decks(sorted(res))[0]
 
 class CmdlineTreeMixin:
-    def print_tree(self, indent='', prefix='', idx=0):
+    def print_tree(self, leaf_lambda=lambda t: '', indent='', prefix='', idx=0):
         print('\033[{ca}m{prefix}⟪\033[{cb}m{idx}\033[{ca}m⟫\033[{cc}m {name}'.format(
             prefix=prefix,
             idx=idx,
             name=self._cmdline_name,
-            ca='33', cb='93', cc='0'))
+            ca='33', cb='93', cc='0') +
+            leaf_lambda(self))
         idx += 1
         if self._cmdline_children:
             for c in self._cmdline_children[:-1]:
-                idx = c.print_tree(indent+'│   ', indent+'├──', idx)
-            idx = self._cmdline_children[-1].print_tree(indent+'    ', indent+'└──', idx)
+                idx = c.print_tree(leaf_lambda, indent+'│   ', indent+'├──', idx)
+            idx = self._cmdline_children[-1].print_tree(leaf_lambda, indent+'    ', indent+'└──', idx)
         return idx
 
     def child_by_idx(self, idx):
@@ -122,31 +123,41 @@ class Deck(CmdlineTreeMixin):
 
 strip_escapes = lambda s: re.sub('\033\\[[^m]+m', '', s)
 term_width = lambda s: len(strip_escapes(s))
+bar = lambda val, step: '█'*int(val/step) + ' ▏▎▍▌▋▊▉██'[round((val/step)%1*8)]
 
 def pretty_histogram(data):
     ca, cb, cc, cs, ct, cv = '37', '0', '93', '93', '37', '31'
     vals, counts = zip(*data)
     clen,   vlen = max(map(len, map(str, counts))), max(map(len, map(str, vals)))
     cols,   rows = shutil.get_terminal_size()
-    fmt    = '\033[{cv}m{{:>{vlen}}}\033[{ca}m│\033[{cc}m{{:<{clen}}}\033[{ca}m│\033[{cb}m{{}}'.format(cv=cv, ca=ca, cc=cc, cb=cb,
+    fmt      = '\033[{cv}m{{:>{vlen}}}\033[{ca}m│\033[{cc}m{{:<{clen}}}\033[{ca}m│\033[{cb}m{{}}'.format(
+            cv=cv, ca=ca, cc=cc, cb=cb,
             vlen=vlen, clen=clen)
     # This will break for one billion reviews or more in one bin
-    tick_fmt = '\033[{cs}m{{:>9}}\033[{ct}m┐'.format(cs=cs, ct=ct)
-    tickw = term_width(tick_fmt.format(0))
-    graphw = cols - term_width(fmt.format(0, 0, ''))
-    ticks = int(graphw/tickw)
+    tick_fmt = '\033[{cs}m{{:>9}}\033[{ct}m'.format(cs=cs, ct=ct)
+    tickw    = term_width(tick_fmt.format(0))+1 # +1 for pointer character added below
+    graphw   = cols - term_width(fmt.format(0, 0, ''))
+    ticks    = int(graphw/tickw)
+    grid     = (' '*(tickw-1) + '│')*ticks
     min_step = max(counts)/ticks
-    foo = 10**int(math.log10(min_step))
+    foo      = 10**int(math.log10(min_step))
     sensible_step = int((math.ceil(min_step/foo)) * foo)
-    step = sensible_step/tickw
-    bar = lambda val: '█'*int(val/step) + ' ▏▎▍▌▋▊▉██'[round((val/step)%1*8)]
-    grid = (' '*(tickw-1) + '│')*ticks
+    step     = sensible_step/tickw
 
-    print(fmt.format('#', 'x', (tick_fmt*ticks).format(*((i+1)*sensible_step for i in range(ticks)))))
-    for val, count in data:
-        b = bar(count)
-        g = b + '\033[{ct}m'.format(ct=ct) + grid[len(b):]
-        print(fmt.format(val, count, g))
+    graphlines = [ fmt.format(val, count, bar(count, step) + '\033[{ct}m'.format(ct=ct) + grid[int(count/step)+1:])
+            for val, count in data ]
+    scale = lambda c: fmt.format('x', '#', ((tick_fmt+c)*ticks).format(*((i+1)*sensible_step for i in range(ticks))))
+
+#    chunksize = int(rows/2)
+    chunksize = rows-2
+
+    print(scale('┐'))
+    while graphlines:
+        print('\n'.join(graphlines[:chunksize]))
+        graphlines = graphlines[chunksize:]
+        if graphlines:
+            print(scale('┤'))
+    print(scale('┘'))
 
 
 if __name__ == '__main__':
@@ -180,8 +191,13 @@ if __name__ == '__main__':
 
     @subcmd
     def _mature_avg_reviews(args, deck, **_):
-        print(deck.mature_avg_reviews(args.cutoff))
+        if args.tree:
+            deck.print_tree(lambda t: ' \033[96mavg=\033[93m{:.3f}'.format(t.mature_avg_reviews(args.cutoff) or 0))
+        else:
+            print('Average review count of mature cards for {}: {:.3f}'.format(
+                ', '.join(d.name for d in deck.subdecks), deck.mature_avg_reviews(args.cutoff)))
     _mature_avg_reviews.parser.add_argument('-c', '--cutoff', default=21)
+    _mature_avg_reviews.parser.add_argument('-t', '--tree', action='store_true')
 
     @subcmd
     def _revision_histogram(deck, **_):
@@ -192,5 +208,8 @@ if __name__ == '__main__':
     pro = pros[args.profile] if args.profile else sorted(pros.items())[0][1]
     root = list_decks(pro)
     deck = Deck(root.db, '<query>', None, [ root.child_by_idx(int(idx)) for idx in args.decks.split(',') ])
-    args.func(args=args, pro=pro, deck=deck)
+    if args.func:
+        args.func(args=args, pro=pro, deck=deck)
+    else:
+        print('Unknown sub-command.')
 
