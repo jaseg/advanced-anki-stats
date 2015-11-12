@@ -9,6 +9,7 @@ from itertools import groupby
 from functools import lru_cache
 import shutil
 import math
+import re
 
 
 @contextmanager
@@ -119,28 +120,33 @@ class Deck(CmdlineTreeMixin):
             ') GROUP BY cnt'), tuple(self.ids)).fetchall()
 
 
+strip_escapes = lambda s: re.sub('\033\\[[^m]+m', '', s)
+term_width = lambda s: len(strip_escapes(s))
+
 def pretty_histogram(data):
+    ca, cb, cc, cs, ct, cv = '37', '0', '93', '93', '37', '31'
     vals, counts = zip(*data)
     clen,   vlen = max(map(len, map(str, counts))), max(map(len, map(str, vals)))
     cols,   rows = shutil.get_terminal_size()
-    fmt    = '{{:>{}}}│{{:<{}}} {{}}'.format(vlen, clen)
-    tick_fmt = '{:>9}┐'
-    tickw = len(tick_fmt.format(0))
-    graphw = cols - len(fmt.format(0, 0, ''))
+    fmt    = '\033[{cv}m{{:>{vlen}}}\033[{ca}m│\033[{cc}m{{:<{clen}}}\033[{ca}m│\033[{cb}m{{}}'.format(cv=cv, ca=ca, cc=cc, cb=cb,
+            vlen=vlen, clen=clen)
     # This will break for one billion reviews or more in one bin
+    tick_fmt = '\033[{cs}m{{:>9}}\033[{ct}m┐'.format(cs=cs, ct=ct)
+    tickw = term_width(tick_fmt.format(0))
+    graphw = cols - term_width(fmt.format(0, 0, ''))
     ticks = int(graphw/tickw)
     min_step = max(counts)/ticks
     foo = 10**int(math.log10(min_step))
     sensible_step = int((math.ceil(min_step/foo)) * foo)
     step = sensible_step/tickw
     bar = lambda val: '█'*int(val/step) + ' ▏▎▍▌▋▊▉██'[round((val/step)%1*8)]
+    grid = (' '*(tickw-1) + '│')*ticks
 
     print(fmt.format('#', 'x', (tick_fmt*ticks).format(*((i+1)*sensible_step for i in range(ticks)))))
     for val, count in data:
-        tick = ' '*(tickw-1) + '│'
         b = bar(count)
-        g = b + (tick*ticks)[len(b):]
-        print(fmt.format(val, count, g)[0:cols])
+        g = b + '\033[{ct}m'.format(ct=ct) + grid[len(b):]
+        print(fmt.format(val, count, g))
 
 
 if __name__ == '__main__':
