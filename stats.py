@@ -9,7 +9,6 @@ from itertools import groupby
 from functools import lru_cache
 import shutil
 import math
-import re
 
 
 @contextmanager
@@ -121,15 +120,13 @@ class Deck(CmdlineTreeMixin):
 
 
 def pretty_histogram(data):
-    ca, cb, cc, cs, ct, cv = '37', '0', '93', '93', '37', '31'
     vals, counts = zip(*data)
     clen,   vlen = max(map(len, map(str, counts))), max(map(len, map(str, vals)))
     cols,   rows = shutil.get_terminal_size()
-    fmt    = '\033[{cv}m{{:>{vlen}}}\033[{ca}m│\033[{cc}m{{:<{clen}}}\033[{ca}m│\033[{cb}m{{}}'.format(cv=cv, ca=ca, cc=cc, cb=cb,
-            vlen=vlen, clen=clen)
-    tick_fmt = '\033[{cs}m{{:>9}}\033[{ct}m┐'.format(cs=cs, ct=ct)
-    tickw = 10
-    graphw = cols - len(re.sub('\033[^m]m', '', fmt.format(0, 0, '')))
+    fmt    = '{{:>{}}}│{{:<{}}} {{}}'.format(vlen, clen)
+    tick_fmt = '{:>9}┐'
+    tickw = len(tick_fmt.format(0))
+    graphw = cols - len(fmt.format(0, 0, ''))
     # This will break for one billion reviews or more in one bin
     ticks = int(graphw/tickw)
     min_step = max(counts)/ticks
@@ -142,7 +139,7 @@ def pretty_histogram(data):
     for val, count in data:
         tick = ' '*(tickw-1) + '│'
         b = bar(count)
-        g = b + '\033[{ct}m'.format(ct=ct) +  (tick*ticks)[len(b):]
+        g = b + (tick*ticks)[len(b):]
         print(fmt.format(val, count, g)[0:cols])
 
 
