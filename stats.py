@@ -21,49 +21,42 @@ def list_profiles(anki_dir='~/Anki'):
                 for name, in db.execute('SELECT name FROM profiles WHERE name != "_global"').fetchall() ]
 
 def list_decks(profile_dir='~/Anki/User 1'):
-    with dbopen(profile_dir, 'collection.anki2') as db:
-        if db.execute('SELECT COUNT(*) FROM col').fetchone() > (1,):
-            raise UserWarning('Profile contains more than one collection.')
-        decks = json.loads(db.execute('SELECT decks FROM col LIMIT 1').fetchone()[0])
+    db = sqlite3.connect(path.expanduser(path.join(profile_dir, 'collection.anki2')))
+    if db.execute('SELECT COUNT(*) FROM col').fetchone() > (1,):
+        raise UserWarning('Profile contains more than one collection.')
+    decks = json.loads(db.execute('SELECT decks FROM col LIMIT 1').fetchone()[0])
 
-        # NOTE: The deck_id check for the special "Default" deck is a bit heuristic here. This deck is created when the
-        # profile is initialized and as such AFAICT will always end up with the sqlite ID 1. We can't reliably use the
-        # deck name, as that one is just "Default", and nothing prevents anyone from naming a regular deck thus. This
-        # sqlite ID hack is also what Anki itself uses.
+    # NOTE: The deck_id check for the special "Default" deck is a bit heuristic here. This deck is created when the
+    # profile is initialized and as such AFAICT will always end up with the sqlite ID 1. We can't reliably use the
+    # deck name, as that one is just "Default", and nothing prevents anyone from naming a regular deck thus. This
+    # sqlite ID hack is also what Anki itself uses.
 
-        res = [ (['<everything>'] + data['name'].split('::'), deck_id)
-                for deck_id, data
-                in decks.items()
-                if deck_id != '1'
-            ]
-#        if len(res) != len(decks):
-#            raise UserWarning('Profile contains duplicate deck name.')
+    if len({ data['name'] for data in decks.values() }) != len(decks):
+        raise UserWarning('Collection contains decks with duplicate names')
 
-        build_decks = lambda res: [
-                Deck(db,
-                     key,
-                     list(group)[0][1], # the group's first element is the one with the shortest name, i.e. the super-deck
-                     build_decks( ( (n[1:],did) for n,did in group[1:] ) )
-                )
+    res = [ (['<everything>'] + ([] if deck_id == '1' else data['name'].split('::')), deck_id)
+            for deck_id, data
+            in decks.items()
+        ]
+    
+    build_decks = lambda res: [
+            Deck(db,
+                 key,
+                 group[0][1], # the group's first element is the one with the shortest name, i.e. the super-deck
+                 build_decks( [ (n[1:],did) for n,did in group[1:] ] )
+            )
+            for key,group
+            in (
+                (key, list(group))
                 for key,group
-                in (
-                    (key, list(group))
-                    for key,group
-                    in groupby(
-                        sorted(res),
-                        lambda el: el[0][0]
-                    )
+                in groupby(
+                    res,
+                    lambda e: e[0][0]
                 )
-            ]
+            )
+        ]
 
-#        res = [ Deck(db, name, deck_id) for name,deck_id in sorted(res) if deck_id != '1' ]
-
-        return build_decks(res)[0]
-#        return { name: Deck(db,
-#                            name,
-#                            deck_id,
-#                            { iid for iname,iid in res.items() if iname.startswith(name+'::') )
-#                for name, deck_id in res.items() }
+    return build_decks(sorted(res))[0]
 
 class CmdlineTreeMixin:
     def print_tree(self, indent='', prefix='', idx=0):
