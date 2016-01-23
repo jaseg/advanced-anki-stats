@@ -114,6 +114,11 @@ class Deck(CmdlineTreeMixin):
                 'SELECT COUNT(*) as cnt FROM revlog JOIN cards ON cid=cards.id '
                 'WHERE did IN ({ids}) AND cards.ivl > ? GROUP BY cid)'), (*self.ids, cutoff_interval)).fetchone()[0]
 
+    def total_reviews(self):
+        return self.db.execute(self._idhack('SELECT SUM(cnt) FROM ('
+                'SELECT COUNT(*) as cnt FROM revlog JOIN cards ON cid=cards.id '
+                'WHERE did IN ({ids}) GROUP BY cid)'), (*self.ids,)).fetchone()[0]
+
     def revision_histogram(self):
         return self.db.execute(self._idhack('SELECT cnt, COUNT(*) FROM ('
                 'SELECT COUNT(*) AS cnt FROM revlog JOIN cards ON cid=cards.id '
@@ -198,6 +203,15 @@ if __name__ == '__main__':
                 ', '.join(d.name for d in deck.subdecks), deck.mature_avg_reviews(args.cutoff)))
     _mature_avg_reviews.parser.add_argument('-c', '--cutoff', default=21)
     _mature_avg_reviews.parser.add_argument('-t', '--tree', action='store_true')
+
+    @subcmd
+    def _total_reviews(args, deck, **_):
+        if args.tree:
+            deck.print_tree(lambda t: ' \033[96mtot=\033[93m{}'.format(t.total_reviews()))
+        else:
+            print('Total review count for {}: {}'.format(
+                ', '.join(d.name for d in deck.subdecks), deck.total_reviews()))
+    _total_reviews.parser.add_argument('-t', '--tree', action='store_true')
 
     @subcmd
     def _revision_histogram(deck, **_):
