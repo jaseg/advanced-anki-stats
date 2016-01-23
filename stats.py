@@ -200,17 +200,17 @@ if __name__ == '__main__':
             deck.print_tree(lambda t: ' \033[96mavg=\033[93m{:.3f}'.format(t.mature_avg_reviews(args.cutoff) or 0))
         else:
             print('Average review count of mature cards for {}: {:.3f}'.format(
-                ', '.join(d.name for d in deck.subdecks), deck.mature_avg_reviews(args.cutoff)))
+                ', '.join(d.name for d in deck.subdecks), deck.mature_avg_reviews(args.cutoff) or 0))
     _mature_avg_reviews.parser.add_argument('-c', '--cutoff', default=21)
     _mature_avg_reviews.parser.add_argument('-t', '--tree', action='store_true')
 
     @subcmd
     def _total_reviews(args, deck, **_):
         if args.tree:
-            deck.print_tree(lambda t: ' \033[96mtot=\033[93m{}'.format(t.total_reviews()))
+            deck.print_tree(lambda t: ' \033[96mtot=\033[93m{}'.format(t.total_reviews() or 0))
         else:
             print('Total review count for {}: {}'.format(
-                ', '.join(d.name for d in deck.subdecks), deck.total_reviews()))
+                ', '.join(d.name for d in deck.subdecks), deck.total_reviews() or 0))
     _total_reviews.parser.add_argument('-t', '--tree', action='store_true')
 
     @subcmd
