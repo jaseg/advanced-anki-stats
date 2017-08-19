@@ -2,6 +2,7 @@
 
 import sqlite3
 import shutil
+import sys
 from os import path
 from contextlib import contextmanager
 import json
@@ -10,23 +11,26 @@ from functools import lru_cache
 import shutil
 import math
 import re
+import time
 
 
 @contextmanager
 def dbopen(dbdir, dbfile):
+    db = None
     try:
         db = sqlite3.connect(path.expanduser(path.join(dbdir, dbfile)))
         yield db
     finally:
-        db.close()
+        if db:
+            db.close()
 
 def list_profiles(anki_dir='~/Anki'):
     with dbopen(anki_dir, 'prefs.db') as db:
         return { name: path.join(anki_dir, name)
                 for name, in db.execute('SELECT name FROM profiles WHERE name != "_global"').fetchall() }
 
-def list_decks(profile_dir='~/Anki/User 1'):
-    db = sqlite3.connect(path.expanduser(path.join(profile_dir, 'collection.anki2')))
+def list_decks(db_file):
+    db = sqlite3.connect(db_file)
     if db.execute('SELECT COUNT(*) FROM col').fetchone() > (1,):
         raise UserWarning('Profile contains more than one collection.')
     decks = json.loads(db.execute('SELECT decks FROM col LIMIT 1').fetchone()[0])
@@ -105,26 +109,96 @@ class Deck(CmdlineTreeMixin):
         self.ids = {own_id} if own_id else set()
         for d in subdecks:
             self.ids |= d.ids
+        self.subs_by_name = { d.name: d for d in subdecks }
 
     def _idhack(self, query):
         return query.format(ids=','.join(['?']*len(self.ids)))
 
+    def _iexec(self, query, args=tuple()):
+        return self.db.execute(self._idhack(query), (*self.ids, *args))
+
     def mature_avg_reviews(self, cutoff_interval: 'days'=21):
-        return self.db.execute(self._idhack('SELECT AVG(cnt) FROM ('
+        return self._iexec('SELECT AVG(cnt) FROM ('
                 'SELECT COUNT(*) as cnt FROM revlog JOIN cards ON cid=cards.id '
-                'WHERE did IN ({ids}) AND cards.ivl > ? GROUP BY cid)'), (*self.ids, cutoff_interval)).fetchone()[0]
+                'WHERE did IN ({ids}) AND cards.ivl > ? GROUP BY cid)', (cutoff_interval,)).fetchone()[0]
 
     def total_reviews(self):
-        return self.db.execute(self._idhack('SELECT SUM(cnt) FROM ('
+        return self._iexec('SELECT SUM(cnt) FROM ('
                 'SELECT COUNT(*) as cnt FROM revlog JOIN cards ON cid=cards.id '
-                'WHERE did IN ({ids}) GROUP BY cid)'), (*self.ids,)).fetchone()[0]
+                'WHERE did IN ({ids}) GROUP BY cid)').fetchone()[0]
 
     def revision_histogram(self):
-        return self.db.execute(self._idhack('SELECT cnt, COUNT(*) FROM ('
+        return self._iexec('SELECT cnt, COUNT(*) FROM ('
                 'SELECT COUNT(*) AS cnt FROM revlog JOIN cards ON cid=cards.id '
                 'WHERE did IN ({ids}) GROUP BY cid'
-            ') GROUP BY cnt'), tuple(self.ids)).fetchall()
+            ') GROUP BY cnt').fetchall()
 
+    def generate_practice_sheet(self, timespan, kanji, hint_fields):
+        import bs4
+
+        models = json.loads(self.db.execute('SELECT models FROM col').fetchone()[0])
+        fieldnames = {
+                int(model_id): [
+                    field['name']
+                    for field in model['flds']
+                ] for model_id, model in models.items()
+            }
+        models = self._iexec(
+                    'SELECT DISTINCT mid FROM cards JOIN notes ON cards.nid=notes.id WHERE cards.did IN ({ids})'
+                ).fetchall()
+
+        first_model, = models[0]
+        common = fieldnames[first_model]
+        anywhere = fieldnames[first_model]
+        for model, in models[1:]:
+            names = set(fieldnames[model])
+            anywhere |= names
+            common   &= names
+
+        common_color = 93
+        msg  = 'Field names (\x1b[{}mcommon to all cards\x1b[0m):\n* '.format(common_color)+'\n* '.join(
+                    '\x1b[{}m{}\x1b[0m'.format(common_color, n) if n in common else n
+                for n in sorted(anywhere))
+
+        hint_fields = hint_fields.split(',')
+        if not kanji in anywhere:
+            raise IndexError('Cannot find kanji field name {} in deck models'.format(kanji))
+        for hint in hint_fields:
+            if hint not in anywhere:
+                raise IndexError('Cannot find hint field name {} in deck models'.format(hint))
+
+        cards = self._iexec(
+                'SELECT DISTINCT mid, flds FROM revlog '
+                'JOIN cards ON revlog.cid=cards.id '
+                'JOIN notes ON cards.nid=notes.id '
+                'WHERE cards.did IN ({ids}) '
+                'AND revlog.id>?', ((time.time()-timespan)*1000,))
+
+        rv = []
+        for model_id, fields in cards:
+            names = fieldnames[model_id]
+            fields = dict(zip(names, fields.split('\x1f')))
+
+            kanji_value = fields[kanji]
+            if re.search('[a-zA-Z]', kanji_value):
+                continue # likely a non-unicode kanji replaced by an image
+
+            clean = lambda val: bs4.BeautifulSoup(val, 'lxml').text.replace(kanji_value, '█').strip().replace('\n', '')
+            hint_value = [ clean(fields[name]) for name in hint_fields ]
+
+            rv.append((kanji_value, hint_value))
+        return rv, msg
+
+    def __repr__(self):
+        return '<Deck {} "{}", {} subdecks>'.format(self.own_id, self.name, len(self.subdecks))
+
+def generate_latex(f, vals):
+    for kanji, hints in vals:
+        f.write('\\practiceentry{{{}}}{{\n    {}\n}}\n'.format(
+            kanji,
+            '\n    '.join(
+                '\\hint{{{}}}'.format(hint) for hint in hints)))
+    return 'Wrote {} kanji'.format(len(vals))
 
 strip_escapes = lambda s: re.sub('\033\\[[^m]+m', '', s)
 term_width = lambda s: len(strip_escapes(s))
@@ -168,11 +242,13 @@ def pretty_histogram(data):
 if __name__ == '__main__':
     import argparse
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('-a', '--ankidir', default='~/Anki')
     parser.add_argument('-p', '--profile')
+    parser.add_argument('-b', '--database')
     parser.add_argument('-d', '--decks', default='0')
-    sub = parser.add_subparsers()
+    sub = parser.add_subparsers(dest='cmd', metavar='CMD')
+    sub.required = True
 
     def subcmd(func):
         subparser = sub.add_parser(func.__name__.strip('_'))
@@ -187,8 +263,8 @@ if __name__ == '__main__':
             print('{}: {}'.format(name, path))
 
     @subcmd
-    def _list_decks(pro, **_):
-        list_decks(pro).print_tree()
+    def _list_decks(db_file, **_):
+        list_decks(db_file).print_tree()
 
     @subcmd
     def _print_deck_ids(deck, **_):
@@ -217,13 +293,52 @@ if __name__ == '__main__':
     def _revision_histogram(deck, **_):
         pretty_histogram(deck.revision_histogram())
 
+    @subcmd
+    def _generate_practice_sheet(deck, args, **_):
+        match = re.match('([0-9]+)([mhdwMy])', args.timespan)
+        if not match:
+            print('Allowed time format: [number][mhdwMy]')
+            _generate_practice_sheet.parser.print_help()
+            return
+        timespan = int(match.group(1)) * {
+                'm': 60,
+                'h': 3600,
+                'd': 86400,
+                'w': 86400*7,
+                'M': 86400*30,
+                'y': int(86400*365.25)}[match.group(2)]
+        rv, msg = deck.generate_practice_sheet(timespan, args.kanji, args.hints)
+        print(msg)
+        print(generate_latex(args.outfile, rv))
+    _generate_practice_sheet.parser.add_argument('-t', '--timespan', default='1w', nargs='?')
+    _generate_practice_sheet.parser.add_argument('-k', '--kanji', default='Kanji', nargs='?', help='Name of note field containing kanji') 
+    _generate_practice_sheet.parser.add_argument('-x', '--hints', default='Meaning,Onyomi,First kunyomi', help='Comma-separated names of note fields to put on output as hints') 
+    _generate_practice_sheet.parser.add_argument('outfile', type=argparse.FileType('w'))
+    sub.help = 'Available commands:\n* {}'.format(
+            '\n* '.join(sub.choices.keys()))
     args = parser.parse_args()
-    pros = list_profiles(args.ankidir)
-    pro = pros[args.profile] if args.profile else sorted(pros.items())[0][1]
-    root = list_decks(pro)
-    deck = Deck(root.db, '<query>', None, [ root.child_by_idx(int(idx)) for idx in args.decks.split(',') ])
-    if args.func:
-        args.func(args=args, pro=pro, deck=deck)
-    else:
-        print('Unknown sub-command.')
+
+    try:
+        if args.database:
+            db_file, pro = args.database, None
+        else:
+            pros = list_profiles(args.ankidir)
+            pro = pros[args.profile] if args.profile else sorted(pros.items())[0][1]
+            db_file = path.expanduser(path.join(pro, 'collection.anki2'))
+
+        if not path.isfile(db_file):
+            raise ValueError('Database file not found at {}'.format(db_file))
+        root = list_decks(db_file)
+
+        deck = Deck(root.db, '<query>', None, [ root.child_by_idx(int(idx)) for idx in args.decks.split(',') ])
+        if args.func:
+            args.func(root=root, db_file=db_file, args=args, pro=pro, deck=deck)
+        else:
+            print('Unknown sub-command.')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print()
+        parser.print_help()
+        sys.exit(2)
 
