@@ -204,10 +204,10 @@ strip_escapes = lambda s: re.sub('\033\\[[^m]+m', '', s)
 term_width = lambda s: len(strip_escapes(s))
 bar = lambda val, step: '█'*int(val/step) + ' ▏▎▍▌▋▊▉██'[round((val/step)%1*8)]
 
-def pretty_histogram(data):
+def pretty_histogram(data, cfmt='{}'):
     ca, cb, cc, cs, ct, cv = '37', '0', '93', '93', '37', '31'
     vals, counts = zip(*data)
-    clen,   vlen = max(map(len, map(str, counts))), max(map(len, map(str, vals)))
+    clen,   vlen = max(map(len, map(cfmt.format, counts))), max(map(len, map(str, vals)))
     cols,   rows = shutil.get_terminal_size()
     fmt      = '\033[{cv}m{{:>{vlen}}}\033[{ca}m│\033[{cc}m{{:<{clen}}}\033[{ca}m│\033[{cb}m{{}}'.format(
             cv=cv, ca=ca, cc=cc, cb=cb,
@@ -223,7 +223,7 @@ def pretty_histogram(data):
     sensible_step = int((math.ceil(min_step/foo)) * foo)
     step     = sensible_step/tickw
 
-    graphlines = [ fmt.format(val, count, bar(count, step) + '\033[{ct}m'.format(ct=ct) + grid[int(count/step)+1:])
+    graphlines = [ fmt.format(val, cfmt.format(count), bar(count, step) + '\033[{ct}m'.format(ct=ct) + grid[int(count/step)+1:])
             for val, count in data ]
     scale = lambda c: fmt.format('x', '#', ((tick_fmt+c)*ticks).format(*((i+1)*sensible_step for i in range(ticks))))
 
@@ -237,6 +237,7 @@ def pretty_histogram(data):
         if graphlines:
             print(scale('┤'))
     print(scale('┘'))
+    print('\033[0m')
 
 
 if __name__ == '__main__':
